@@ -53,6 +53,7 @@ class ModbusClientImpl extends ModbusClient {
   }
 
   void _onConnectorError(error, stackTrace) {
+    lastRequest = null;
     _waitingQueue.forEach(
         (element) => element.completer.completeError(error, stackTrace));
 
