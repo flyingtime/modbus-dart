@@ -7,8 +7,8 @@ main(List<String> arguments) async {
     print('${rec.level.name}: ${rec.time} [${rec.loggerName}]: ${rec.message}');
   });
 
-  var client = modbus.createTcpClient('10.170.1.20',
-      port: 1001, mode: modbus.ModbusMode.rtu, timeout: Duration(seconds: 5));
+  var client = modbus.createTcpClient('192.168.1.115',
+      port: 504, mode: modbus.ModbusMode.rtu, timeout: Duration(seconds: 5));
 
   try {
     await client.connect();

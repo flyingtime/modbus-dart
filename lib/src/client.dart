@@ -5,10 +5,10 @@ import 'dart:typed_data';
 import 'package:logging/logging.dart';
 
 import '../modbus.dart';
-import 'exceptions.dart';
 import 'util.dart';
 
-typedef void CompleterCallback(Completer completer, int function, Uint8List data);
+typedef void CompleterCallback(
+    Completer completer, int function, Uint8List data);
 
 /// MODBUS client
 /// http://www.modbus.org/docs/Modbus_Application_Protocol_V1_1b.pdf
@@ -16,10 +16,8 @@ class ModbusClientImpl extends ModbusClient {
   final Logger log = new Logger('ModbusClientImpl');
 
   ModbusConnector _connector;
-
-  Map<PendingKey, PendingCallback> _pendingMap = HashMap();
-  Map<PendingKey, Completer> _waitingMap = HashMap();
-  Queue<Request> _waitingQueue = DoubleLinkedQueue();
+  Queue<Request> _waitingQueue = Queue();
+  Request? lastRequest;
 
   ModbusClientImpl(this._connector, int unitId) {
     _connector.onResponse = _onConnectorData;
@@ -44,39 +42,30 @@ class ModbusClientImpl extends ModbusClient {
   }
 
   void _onConnectorData(int function, Uint8List data) {
+    if (lastRequest != null) {
+      lastRequest!.callback(lastRequest!.completer, function, data);
+    }
+
     log.finest("RECV: fn: " +
         function.toRadixString(16).padLeft(2, '0') +
         "h data: " +
         dumpHexToString(data));
-    var key = PendingKey(function & 0x7f);
-
-    var handler = _pendingMap.remove(key);
-    handler?.respond(function, data);
-
-    var waiter = _waitingMap.remove(key);
-    log.finest('unlock $key');
-    waiter?.complete();
-
-    // if (_nextDataCallBack != null) _nextDataCallBack!(function, data);
   }
 
   void _onConnectorError(error, stackTrace) {
-    _waitingMap.values.forEach((element) => element.completeError(error, stackTrace));
-    _pendingMap.values.forEach((element) => element.completer.completeError(error, stackTrace));
+    _waitingQueue.forEach(
+        (element) => element.completer.completeError(error, stackTrace));
 
-    _pendingMap.clear();
-    _waitingMap.clear();
-    // _completer?.completeError(error, stackTrace);
+    _waitingQueue.clear();
     throw ModbusConnectException("Connector Error: ${error}");
   }
 
   void _onConnectorClose() {
-    _waitingMap.values.forEach((element) => element.completeError(ModbusConnectException("Connector was closed before operation was completed")));
-    _pendingMap.values.forEach((element) => element.completer.completeError(ModbusConnectException("Connector was closed before operation was completed")));
-
-    _pendingMap.clear();
-    _waitingMap.clear();
-
+    lastRequest = null;
+    _waitingQueue.forEach((element) => element.completer.completeError(
+        ModbusConnectException(
+            "Connector was closed before operation was completed")));
+    _waitingQueue.clear();
   }
 
   void _sendData(int function, Uint8List data) {
@@ -89,46 +78,24 @@ class ModbusClientImpl extends ModbusClient {
 
   Future<Uint8List> _executeFunctionImpl(
       int function, Uint8List data, CompleterCallback callback) {
-    PendingKey key = PendingKey(function);
     Completer<Uint8List> completer = Completer();
-    if (_waitingMap.containsKey(key)) {
-      _waitingQueue.addLast(Request(function, data, callback, completer));
-      log.finest('waiting queue length ${_waitingQueue.length} key $key');
-    } else {
-      Completer responseCompleter = Completer();
-      _waitingMap[key] = responseCompleter;
-
-      _sendData(function, Uint8List.fromList(data));
-      _pendingMap[key] = PendingCallback(completer, callback);
-
-      log.finest('lock $key');
-      responseCompleter.future.whenComplete(() {
-        if (_waitingQueue.isNotEmpty) {
-          var request = _waitingQueue.removeFirst();
-          _sendNext(request);
-        }
-      });
-    }
+    _waitingQueue.add(Request(function, data, callback, completer));
+    _sendQueue();
     return completer.future;
   }
 
-  void _sendNext(Request request) {
-    PendingKey key = PendingKey(request.function);
-    if (_waitingMap.containsKey(key)) {
-      _waitingQueue.addFirst(request);
-      log.finest('enqueue ${_waitingQueue.length} key $key');
-      return;
+  void _sendQueue() {
+    if (lastRequest == null) {
+      if (_waitingQueue.isEmpty) return;
+      lastRequest = _waitingQueue.removeFirst();
+      _sendData(lastRequest!.function, Uint8List.fromList(lastRequest!.data));
     }
-    Completer responseCompleter = Completer();
-    _sendData(request.function, Uint8List.fromList(request.data));
-    _pendingMap[key] = PendingCallback(request.completer, request.callback);
-    _waitingMap[key] = responseCompleter;
-    log.finest('lock $key');
-    responseCompleter.future.whenComplete(() {
-      if (_waitingQueue.isNotEmpty) {
-        var next = _waitingQueue.removeFirst();
-        _sendNext(next);
-      }
+
+    lastRequest!.completer.future.whenComplete(() {
+      if (_waitingQueue.isEmpty) return;
+
+      lastRequest = _waitingQueue.removeFirst();
+      _sendData(lastRequest!.function, Uint8List.fromList(lastRequest!.data));
     });
   }
 
@@ -167,9 +134,9 @@ class ModbusClientImpl extends ModbusClient {
             e = ModbusException("Unknown error code: ${errorCode}");
             break;
         }
-        completer!.completeError(e);
+        completer.completeError(e);
       } else {
-        completer!.complete(responseData);
+        completer.complete(responseData);
       }
     });
   }
@@ -330,42 +297,11 @@ class ModbusClientImpl extends ModbusClient {
     await executeFunction(ModbusFunctions.writeMultipleRegisters, data);
   }
 }
-class PendingKey {
-  int function;
-  PendingKey(this.function);
 
-  @override
-  int get hashCode {
-    return 31 + function;
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (other is PendingKey) {
-      return function == other.function;
-    }
-    return false;
-  }
-
-  @override
-  String toString() {
-    return 'PendingKey($hashCode)';
-  }
-
-}
-class PendingCallback {
-  Completer<Uint8List> completer;
-  CompleterCallback callback;
-  PendingCallback(this.completer, this.callback);
-
-  void respond(int function, Uint8List data) {
-    callback(completer, function, data);
-  }
-}
 class Request {
   int function;
   Uint8List data;
   CompleterCallback callback;
-  Completer<Uint8List> completer;
+  Completer completer;
   Request(this.function, this.data, this.callback, this.completer);
 }
