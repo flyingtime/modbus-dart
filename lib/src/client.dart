@@ -15,11 +15,13 @@ typedef void CompleterCallback(
 class ModbusClientImpl extends ModbusClient {
   final Logger log = new Logger('ModbusClientImpl');
 
+  final String name;
   ModbusConnector _connector;
-  Queue<Request> _waitingQueue = Queue();
-  Request? lastRequest;
+  static final _waitingQueue = Map<String, Queue<Request>>();
+  static final lastRequest = Map<String, Request?>();
 
-  ModbusClientImpl(this._connector, int unitId) {
+  ModbusClientImpl(this.name, this._connector, int unitId) {
+    _waitingQueue[this.name] = Queue<Request>();
     _connector.onResponse = _onConnectorData;
     _connector.onError = _onConnectorError;
     _connector.onClose = _onConnectorClose;
@@ -33,6 +35,8 @@ class ModbusClientImpl extends ModbusClient {
 
   @override
   Future<void> close() {
+    _waitingQueue[this.name]?.clear();
+    lastRequest[this.name] = null;
     return _connector.close();
   }
 
@@ -42,8 +46,9 @@ class ModbusClientImpl extends ModbusClient {
   }
 
   void _onConnectorData(int function, Uint8List data) {
-    if (lastRequest != null) {
-      lastRequest!.callback(lastRequest!.completer, function, data);
+    if (lastRequest[this.name] != null) {
+      lastRequest[this.name]!
+          .callback(lastRequest[this.name]!.completer, function, data);
     }
 
     log.finest("RECV: fn: " +
@@ -53,20 +58,20 @@ class ModbusClientImpl extends ModbusClient {
   }
 
   void _onConnectorError(error, stackTrace) {
-    lastRequest = null;
-    _waitingQueue.forEach(
+    lastRequest[this.name] = null;
+    _waitingQueue[this.name]?.forEach(
         (element) => element.completer.completeError(error, stackTrace));
 
-    _waitingQueue.clear();
+    _waitingQueue[this.name]?.clear();
     throw ModbusConnectException("Connector Error: ${error}");
   }
 
   void _onConnectorClose() {
-    lastRequest = null;
-    _waitingQueue.forEach((element) => element.completer.completeError(
-        ModbusConnectException(
+    lastRequest[this.name] = null;
+    _waitingQueue[this.name]?.forEach((element) => element.completer
+        .completeError(ModbusConnectException(
             "Connector was closed before operation was completed")));
-    _waitingQueue.clear();
+    _waitingQueue[this.name]?.clear();
   }
 
   void _sendData(int function, Uint8List data) {
@@ -80,23 +85,24 @@ class ModbusClientImpl extends ModbusClient {
   Future<Uint8List> _executeFunctionImpl(
       int function, Uint8List data, CompleterCallback callback) {
     Completer<Uint8List> completer = Completer();
-    _waitingQueue.add(Request(function, data, callback, completer));
+    _waitingQueue[this.name]!.add(Request(function, data, callback, completer));
     _sendQueue();
     return completer.future;
   }
 
   void _sendQueue() {
-    if (lastRequest == null) {
-      if (_waitingQueue.isEmpty) return;
-      lastRequest = _waitingQueue.removeFirst();
-      _sendData(lastRequest!.function, Uint8List.fromList(lastRequest!.data));
+    if (lastRequest[this.name] == null) {
+      if (_waitingQueue[this.name]!.isEmpty) return;
+      lastRequest[this.name] = _waitingQueue[this.name]!.removeFirst();
+      _sendData(lastRequest[this.name]!.function,
+          Uint8List.fromList(lastRequest[this.name]!.data));
     }
 
-    lastRequest!.completer.future.whenComplete(() {
-      if (_waitingQueue.isEmpty) return;
-
-      lastRequest = _waitingQueue.removeFirst();
-      _sendData(lastRequest!.function, Uint8List.fromList(lastRequest!.data));
+    lastRequest[this.name]!.completer.future.whenComplete(() {
+      if (_waitingQueue[this.name]!.isEmpty) return;
+      lastRequest[this.name] = _waitingQueue[this.name]!.removeFirst();
+      _sendData(lastRequest[this.name]!.function,
+          Uint8List.fromList(lastRequest[this.name]!.data));
     });
   }
 

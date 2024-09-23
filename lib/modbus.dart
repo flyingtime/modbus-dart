@@ -91,13 +91,15 @@ abstract class ModbusClient {
   Future<void> writeMultipleRegisters(int address, Uint16List values);
 }
 
-ModbusClient createClient(TcpConnector connector, {int unitId = 1}) =>
-    ModbusClientImpl(connector, unitId);
+ModbusClient createClient(String name, TcpConnector connector,
+    {int unitId = 1}) {
+  return ModbusClientImpl(name, connector, unitId);
+}
 
-ModbusClient createTcpClient(address,
+ModbusClient createTcpClient(name, address,
         {int port = 502,
         ModbusMode mode = ModbusMode.rtu,
         int unitId = 1,
         Duration? timeout}) =>
     ModbusClientImpl(
-        TcpConnector(address, port, mode, timeout: timeout), unitId);
+        name, TcpConnector(address, port, mode, timeout: timeout), unitId);
