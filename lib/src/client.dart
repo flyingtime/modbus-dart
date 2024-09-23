@@ -17,11 +17,11 @@ class ModbusClientImpl extends ModbusClient {
 
   final String name;
   ModbusConnector _connector;
-  static final _waitingQueue = Map<String, Queue<Request>>();
+  static final _waitingQueue = Map<String, DoubleLinkedQueue<Request>>();
   static final lastRequest = Map<String, Request?>();
 
   ModbusClientImpl(this.name, this._connector, int unitId) {
-    _waitingQueue[this.name] = Queue<Request>();
+    _waitingQueue[this.name] = DoubleLinkedQueue<Request>();
     _connector.onResponse = _onConnectorData;
     _connector.onError = _onConnectorError;
     _connector.onClose = _onConnectorClose;
@@ -85,7 +85,8 @@ class ModbusClientImpl extends ModbusClient {
   Future<Uint8List> _executeFunctionImpl(
       int function, Uint8List data, CompleterCallback callback) {
     Completer<Uint8List> completer = Completer();
-    _waitingQueue[this.name]!.add(Request(function, data, callback, completer));
+    _waitingQueue[this.name]!
+        .addLast(Request(function, data, callback, completer));
     _sendQueue();
     return completer.future;
   }
